@@ -4,15 +4,17 @@ import sqlite3
 import random
 import time
 import os
-import json
 
 app = Flask(__name__)
 CORS(app)
 
+# ============================================================
+# БАЗА ДАННЫХ
+# ============================================================
 conn = sqlite3.connect('telebem.db', check_same_thread=False)
 c = conn.cursor()
 
-# Таблица пользователей (расширенная)
+# 1. Пользователи (без баланса и NFT)
 c.execute('''CREATE TABLE IF NOT EXISTS users (
     username TEXT PRIMARY KEY,
     password TEXT,
@@ -20,10 +22,11 @@ c.execute('''CREATE TABLE IF NOT EXISTS users (
     last_name TEXT DEFAULT '',
     bio TEXT DEFAULT '',
     birth_date TEXT DEFAULT '',
-    avatar TEXT DEFAULT ''
+    avatar_color TEXT DEFAULT '#4a90d4',
+    avatar_emoji TEXT DEFAULT '👤'
 )''')
 
-# Таблица сообщений
+# 2. Сообщения
 c.execute('''CREATE TABLE IF NOT EXISTS messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     from_user TEXT,
@@ -32,14 +35,21 @@ c.execute('''CREATE TABLE IF NOT EXISTS messages (
     time TEXT
 )''')
 
-# Добавляем тестового пользователя
+conn.commit()
+
+# ============================================================
+# ТЕСТОВЫЙ ПОЛЬЗОВАТЕЛЬ
+# ============================================================
 try:
-    c.execute('INSERT INTO users (username, password, first_name, last_name, bio, birth_date) VALUES (?,?,?,?,?,?)',
-              ('test', '123', 'Тест', 'Тестов', 'Тестовый аккаунт', '2000-01-01'))
+    c.execute('INSERT INTO users (username, password, first_name) VALUES (?,?,?)',
+              ('test', '123', 'Тест'))
     conn.commit()
 except:
     pass
 
+# ============================================================
+# БОТ
+# ============================================================
 bot_answers = [
     "Привет! Я бот Telebem 🤖",
     "Сообщение получено!",
@@ -51,15 +61,24 @@ bot_answers = [
     "Рад помочь с разработкой!"
 ]
 
+# ============================================================
+# API
+# ============================================================
+
 @app.route('/')
 def home():
     return jsonify({"status": "Telebem API работает!"})
+
+@app.route('/ping')
+def ping():
+    return jsonify({"status": "pong"})
 
 @app.route('/register', methods=['POST'])
 def register():
     d = request.json
     try:
-        c.execute('INSERT INTO users (username, password) VALUES (?,?)', (d['username'], d['password']))
+        c.execute('INSERT INTO users (username, password) VALUES (?,?)',
+                  (d['username'], d['password']))
         conn.commit()
         c.execute('INSERT INTO messages (from_user, to_user, text, time) VALUES (?,?,?,?)',
                   ('🤖 Telebem', d['username'], 'Добро пожаловать в Telebem! Я бот-помощник.', time.strftime('%H:%M')))
@@ -99,14 +118,15 @@ def messages():
         msgs.append({'from': row[1], 'to': row[2], 'text': row[3], 'time': row[4]})
     return jsonify(msgs)
 
-# ========== НОВЫЕ API ДЛЯ ПРОФИЛЯ И ПОИСКА ==========
-
+# ============================================================
+# ПРОФИЛЬ
+# ============================================================
 @app.route('/profile', methods=['GET'])
 def get_profile():
     username = request.args.get('username', '')
     if not username:
         return jsonify({'status': 'error', 'msg': 'Не указан username'})
-    c.execute('SELECT username, first_name, last_name, bio, birth_date, avatar FROM users WHERE username=?', (username,))
+    c.execute('SELECT username, first_name, last_name, bio, birth_date, avatar_color, avatar_emoji FROM users WHERE username=?', (username,))
     row = c.fetchone()
     if not row:
         return jsonify({'status': 'error', 'msg': 'Пользователь не найден'})
@@ -117,7 +137,8 @@ def get_profile():
         'last_name': row[2] or '',
         'bio': row[3] or '',
         'birth_date': row[4] or '',
-        'avatar': row[5] or ''
+        'avatar_color': row[5] or '#4a90d4',
+        'avatar_emoji': row[6] or '👤'
     })
 
 @app.route('/profile', methods=['POST'])
@@ -126,10 +147,9 @@ def update_profile():
     username = d.get('username', '')
     if not username:
         return jsonify({'status': 'error', 'msg': 'Не указан username'})
-    # Обновляем только переданные поля
     fields = []
     values = []
-    for key in ['first_name', 'last_name', 'bio', 'birth_date', 'avatar']:
+    for key in ['first_name', 'last_name', 'bio', 'birth_date', 'avatar_color', 'avatar_emoji']:
         if key in d:
             fields.append(f"{key} = ?")
             values.append(d[key])
@@ -141,48 +161,57 @@ def update_profile():
     conn.commit()
     return jsonify({'status': 'ok'})
 
-@app.route('/search', methods=['GET'])
-def search_users():
-    q = request.args.get('q', '').strip()
-    if not q:
-        return jsonify([])
-    c.execute('SELECT username, first_name, last_name FROM users WHERE username LIKE ? OR first_name LIKE ? OR last_name LIKE ?',
-              (f'%{q}%', f'%{q}%', f'%{q}%'))
-    rows = c.fetchall()
-    result = []
-    for row in rows:
-        if row[0] != 'test':  # не показываем тестового
-            result.append({
-                'username': row[0],
-                'first_name': row[1] or '',
-                'last_name': row[2] or ''
-            })
-    return jsonify(result)
-
+# ============================================================
+# ЧАТЫ (ФИЛЬТРУЕТ ТОЛЬКО ЧАТЫ ЮЗЕРА)
+# ============================================================
 @app.route('/chats', methods=['GET'])
 def get_chats():
     username = request.args.get('username', '')
     if not username:
         return jsonify({'status': 'error', 'msg': 'Не указан username'})
-    # Получаем всех пользователей, с которыми были сообщения
+    
     c.execute('''SELECT DISTINCT from_user, to_user FROM messages 
-                 WHERE from_user=? OR to_user=?''', (username, username))
+                 WHERE from_user = ? OR to_user = ?''', (username, username))
     rows = c.fetchall()
+    
     chats = set()
     for row in rows:
-        if row[0] == username and row[1] != username:
+        if row[0] == username:
             chats.add(row[1])
-        elif row[1] == username and row[0] != username:
+        else:
             chats.add(row[0])
-    # Всегда добавляем бота
+    
     chats.add('🤖 Telebem')
-    # Добавляем тестовых пользователей для демонстрации
-    chats.add('test')
-    # Убираем самого себя
     if username in chats:
         chats.remove(username)
+    
     return jsonify(list(chats))
 
+# ============================================================
+# ПОИСК ПОЛЬЗОВАТЕЛЕЙ
+# ============================================================
+@app.route('/search', methods=['GET'])
+def search_users():
+    q = request.args.get('q', '').strip()
+    if not q:
+        return jsonify([])
+    c.execute('SELECT username, first_name, last_name, avatar_color, avatar_emoji FROM users WHERE username LIKE ? OR first_name LIKE ? OR last_name LIKE ?',
+              (f'%{q}%', f'%{q}%', f'%{q}%'))
+    rows = c.fetchall()
+    result = []
+    for row in rows:
+        result.append({
+            'username': row[0],
+            'first_name': row[1] or '',
+            'last_name': row[2] or '',
+            'avatar_color': row[3] or '#4a90d4',
+            'avatar_emoji': row[4] or '👤'
+        })
+    return jsonify(result)
+
+# ============================================================
+# ЗАПУСК
+# ============================================================
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
