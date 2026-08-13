@@ -4,52 +4,41 @@ import sqlite3
 import random
 import time
 import os
+import threading
+import requests
 
 app = Flask(__name__)
 CORS(app)
 
-# ============================================================
-# БАЗА ДАННЫХ
-# ============================================================
 conn = sqlite3.connect('telebem.db', check_same_thread=False)
 c = conn.cursor()
 
-# 1. Пользователи (без баланса и NFT)
 c.execute('''CREATE TABLE IF NOT EXISTS users (
-    username TEXT PRIMARY KEY,
-    password TEXT,
-    first_name TEXT DEFAULT '',
-    last_name TEXT DEFAULT '',
-    bio TEXT DEFAULT '',
-    birth_date TEXT DEFAULT '',
-    avatar_color TEXT DEFAULT '#4a90d4',
-    avatar_emoji TEXT DEFAULT '👤'
+username TEXT PRIMARY KEY,
+password TEXT,
+first_name TEXT DEFAULT '',
+last_name TEXT DEFAULT '',
+bio TEXT DEFAULT '',
+birth_date TEXT DEFAULT '',
+avatar_color TEXT DEFAULT '#4a90d4',
+avatar_emoji TEXT DEFAULT '👤'
 )''')
 
-# 2. Сообщения
 c.execute('''CREATE TABLE IF NOT EXISTS messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    from_user TEXT,
-    to_user TEXT,
-    text TEXT,
-    time TEXT
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+from_user TEXT,
+to_user TEXT,
+text TEXT,
+time TEXT
 )''')
-
 conn.commit()
 
-# ============================================================
-# ТЕСТОВЫЙ ПОЛЬЗОВАТЕЛЬ
-# ============================================================
 try:
-    c.execute('INSERT INTO users (username, password, first_name) VALUES (?,?,?)',
-              ('test', '123', 'Тест'))
+    c.execute('INSERT INTO users (username, password, first_name) VALUES (?,?,?)', ('test', '123', 'Тест'))
     conn.commit()
 except:
     pass
 
-# ============================================================
-# БОТ
-# ============================================================
 bot_answers = [
     "Привет! Я бот Telebem 🤖",
     "Сообщение получено!",
@@ -60,10 +49,6 @@ bot_answers = [
     "Если есть вопросы - спрашивай!",
     "Рад помочь с разработкой!"
 ]
-
-# ============================================================
-# API
-# ============================================================
 
 @app.route('/')
 def home():
@@ -77,8 +62,7 @@ def ping():
 def register():
     d = request.json
     try:
-        c.execute('INSERT INTO users (username, password) VALUES (?,?)',
-                  (d['username'], d['password']))
+        c.execute('INSERT INTO users (username, password) VALUES (?,?)', (d['username'], d['password']))
         conn.commit()
         c.execute('INSERT INTO messages (from_user, to_user, text, time) VALUES (?,?,?,?)',
                   ('🤖 Telebem', d['username'], 'Добро пожаловать в Telebem! Я бот-помощник.', time.strftime('%H:%M')))
@@ -118,9 +102,6 @@ def messages():
         msgs.append({'from': row[1], 'to': row[2], 'text': row[3], 'time': row[4]})
     return jsonify(msgs)
 
-# ============================================================
-# ПРОФИЛЬ
-# ============================================================
 @app.route('/profile', methods=['GET'])
 def get_profile():
     username = request.args.get('username', '')
@@ -161,35 +142,24 @@ def update_profile():
     conn.commit()
     return jsonify({'status': 'ok'})
 
-# ============================================================
-# ЧАТЫ (ФИЛЬТРУЕТ ТОЛЬКО ЧАТЫ ЮЗЕРА)
-# ============================================================
 @app.route('/chats', methods=['GET'])
 def get_chats():
     username = request.args.get('username', '')
     if not username:
         return jsonify({'status': 'error', 'msg': 'Не указан username'})
-    
-    c.execute('''SELECT DISTINCT from_user, to_user FROM messages 
-                 WHERE from_user = ? OR to_user = ?''', (username, username))
+    c.execute('SELECT DISTINCT from_user, to_user FROM messages WHERE from_user = ? OR to_user = ?', (username, username))
     rows = c.fetchall()
-    
     chats = set()
     for row in rows:
         if row[0] == username:
             chats.add(row[1])
         else:
             chats.add(row[0])
-    
     chats.add('🤖 Telebem')
     if username in chats:
         chats.remove(username)
-    
     return jsonify(list(chats))
 
-# ============================================================
-# ПОИСК ПОЛЬЗОВАТЕЛЕЙ
-# ============================================================
 @app.route('/search', methods=['GET'])
 def search_users():
     q = request.args.get('q', '').strip()
@@ -209,9 +179,19 @@ def search_users():
         })
     return jsonify(result)
 
-# ============================================================
-# ЗАПУСК
-# ============================================================
+# Self-ping чтобы Render не засыпал
+def self_ping():
+    time.sleep(30)  # ждём пока сервер поднимется
+    while True:
+        time.sleep(600)  # каждые 10 минут
+        try:
+            requests.get('https://telebem-server.onrender.com/ping', timeout=10)
+            print('Self-ping OK')
+        except Exception as e:
+            print('Self-ping failed:', e)
+
+threading.Thread(target=self_ping, daemon=True).start()
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
