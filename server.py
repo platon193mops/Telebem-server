@@ -1,7 +1,6 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import sqlite3
-import random
 import time
 import os
 import threading
@@ -10,45 +9,33 @@ import requests
 app = Flask(__name__)
 CORS(app)
 
+VERIFIED_USERS = {'dobrak'}
+
 conn = sqlite3.connect('telebem.db', check_same_thread=False)
 c = conn.cursor()
 
 c.execute('''CREATE TABLE IF NOT EXISTS users (
-username TEXT PRIMARY KEY,
-password TEXT,
-first_name TEXT DEFAULT '',
-last_name TEXT DEFAULT '',
-bio TEXT DEFAULT '',
-birth_date TEXT DEFAULT '',
-avatar_color TEXT DEFAULT '#4a90d4',
-avatar_emoji TEXT DEFAULT '👤'
+    username TEXT PRIMARY KEY,
+    password TEXT,
+    display_name TEXT DEFAULT '',
+    bio TEXT DEFAULT '',
+    avatar TEXT DEFAULT ''
 )''')
 
 c.execute('''CREATE TABLE IF NOT EXISTS messages (
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-from_user TEXT,
-to_user TEXT,
-text TEXT,
-time TEXT
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_user TEXT,
+    to_user TEXT,
+    text TEXT,
+    time TEXT
 )''')
 conn.commit()
 
 try:
-    c.execute('INSERT INTO users (username, password, first_name) VALUES (?,?,?)', ('test', '123', 'Тест'))
+    c.execute('INSERT INTO users (username, password, display_name) VALUES (?,?,?)', ('test', '123', 'Тест'))
     conn.commit()
 except:
     pass
-
-bot_answers = [
-    "Привет! Я бот Telebem 🤖",
-    "Сообщение получено!",
-    "Сервер работает стабильно ✅",
-    "Ты молодец что создаёшь свой мессенджер! 🚀",
-    "Я здесь чтобы помогать тестировать!",
-    "Все системы работают нормально.",
-    "Если есть вопросы - спрашивай!",
-    "Рад помочь с разработкой!"
-]
 
 @app.route('/')
 def home():
@@ -62,10 +49,8 @@ def ping():
 def register():
     d = request.json
     try:
-        c.execute('INSERT INTO users (username, password) VALUES (?,?)', (d['username'], d['password']))
-        conn.commit()
-        c.execute('INSERT INTO messages (from_user, to_user, text, time) VALUES (?,?,?,?)',
-                  ('🤖 Telebem', d['username'], 'Добро пожаловать в Telebem! Я бот-помощник.', time.strftime('%H:%M')))
+        c.execute('INSERT INTO users (username, password, display_name) VALUES (?,?,?)',
+                  (d['username'], d['password'], d.get('display_name', d['username'])))
         conn.commit()
         return jsonify({'status': 'ok'})
     except:
@@ -79,85 +64,89 @@ def login():
         return jsonify({'status': 'ok'})
     return jsonify({'status': 'error'})
 
-@app.route('/send', methods=['POST'])
-def send():
-    d = request.json
-    c.execute('INSERT INTO messages (from_user, to_user, text, time) VALUES (?,?,?,?)',
-              (d['from'], d['to'], d['text'], time.strftime('%H:%M')))
-    conn.commit()
-    if d['to'] == 'bot' or d['to'] == '🤖 Telebem':
-        c.execute('INSERT INTO messages (from_user, to_user, text, time) VALUES (?,?,?,?)',
-                  ('🤖 Telebem', d['from'], random.choice(bot_answers), time.strftime('%H:%M')))
-        conn.commit()
-    return jsonify({'status': 'ok'})
-
-@app.route('/messages')
-def messages():
-    user = request.args.get('user', '')
-    chat = request.args.get('chat', '')
-    c.execute('SELECT * FROM messages WHERE (from_user=? AND to_user=?) OR (from_user=? AND to_user=?) ORDER BY id',
-              (user, chat, chat, user))
-    msgs = []
-    for row in c.fetchall():
-        msgs.append({'from': row[1], 'to': row[2], 'text': row[3], 'time': row[4]})
-    return jsonify(msgs)
-
 @app.route('/profile', methods=['GET'])
 def get_profile():
     username = request.args.get('username', '')
     if not username:
-        return jsonify({'status': 'error', 'msg': 'Не указан username'})
-    c.execute('SELECT username, first_name, last_name, bio, birth_date, avatar_color, avatar_emoji FROM users WHERE username=?', (username,))
+        return jsonify({'status': 'error'})
+    c.execute('SELECT username, display_name, bio, avatar FROM users WHERE username=?', (username,))
     row = c.fetchone()
     if not row:
-        return jsonify({'status': 'error', 'msg': 'Пользователь не найден'})
+        return jsonify({'status': 'error', 'msg': 'Не найден'})
     return jsonify({
         'status': 'ok',
         'username': row[0],
-        'first_name': row[1] or '',
-        'last_name': row[2] or '',
-        'bio': row[3] or '',
-        'birth_date': row[4] or '',
-        'avatar_color': row[5] or '#4a90d4',
-        'avatar_emoji': row[6] or '👤'
+        'display_name': row[1] or '',
+        'bio': row[2] or '',
+        'avatar': row[3] or '',
+        'verified': username in VERIFIED_USERS
     })
 
 @app.route('/profile', methods=['POST'])
 def update_profile():
     d = request.json
     username = d.get('username', '')
-    if not username:
-        return jsonify({'status': 'error', 'msg': 'Не указан username'})
-    fields = []
-    values = []
-    for key in ['first_name', 'last_name', 'bio', 'birth_date', 'avatar_color', 'avatar_emoji']:
+    password = d.get('password', '')
+    if not username or not password:
+        return jsonify({'status': 'error', 'msg': 'Нет авторизации'})
+    c.execute('SELECT username FROM users WHERE username=? AND password=?', (username, password))
+    if not c.fetchone():
+        return jsonify({'status': 'error', 'msg': 'Неверный пароль'})
+
+    new_username = d.get('new_username', '').strip()
+    if new_username and new_username != username:
+        c.execute('SELECT username FROM users WHERE username=?', (new_username,))
+        if c.fetchone():
+            return jsonify({'status': 'error', 'msg': 'Username занят'})
+        c.execute('UPDATE messages SET from_user=? WHERE from_user=?', (new_username, username))
+        c.execute('UPDATE messages SET to_user=? WHERE to_user=?', (new_username, username))
+        c.execute('UPDATE users SET username=? WHERE username=?', (new_username, username))
+        conn.commit()
+        username = new_username
+
+    fields, values = [], []
+    for key in ['display_name', 'bio', 'avatar']:
         if key in d:
             fields.append(f"{key} = ?")
             values.append(d[key])
-    if not fields:
-        return jsonify({'status': 'error', 'msg': 'Нет данных для обновления'})
-    values.append(username)
-    query = f"UPDATE users SET {', '.join(fields)} WHERE username = ?"
-    c.execute(query, values)
+    if fields:
+        values.append(username)
+        c.execute(f"UPDATE users SET {', '.join(fields)} WHERE username=?", values)
+        conn.commit()
+
+    return jsonify({'status': 'ok', 'username': username})
+
+@app.route('/send', methods=['POST'])
+def send():
+    d = request.json
+    c.execute('INSERT INTO messages (from_user, to_user, text, time) VALUES (?,?,?,?)',
+              (d['from'], d['to'], d['text'], time.strftime('%H:%M')))
     conn.commit()
     return jsonify({'status': 'ok'})
+
+@app.route('/messages')
+def messages():
+    user = request.args.get('user', '')
+    chat = request.args.get('chat', '')
+    c.execute('''SELECT * FROM messages WHERE
+        (from_user=? AND to_user=?) OR (from_user=? AND to_user=?) ORDER BY id''',
+        (user, chat, chat, user))
+    msgs = []
+    for row in c.fetchall():
+        msgs.append({'from': row[1], 'to': row[2], 'text': row[3], 'time': row[4]})
+    return jsonify(msgs)
 
 @app.route('/chats', methods=['GET'])
 def get_chats():
     username = request.args.get('username', '')
     if not username:
-        return jsonify({'status': 'error', 'msg': 'Не указан username'})
-    c.execute('SELECT DISTINCT from_user, to_user FROM messages WHERE from_user = ? OR to_user = ?', (username, username))
+        return jsonify([])
+    c.execute('SELECT DISTINCT from_user, to_user FROM messages WHERE from_user=? OR to_user=?', (username, username))
     rows = c.fetchall()
     chats = set()
     for row in rows:
-        if row[0] == username:
-            chats.add(row[1])
-        else:
-            chats.add(row[0])
-    chats.add('🤖 Telebem')
-    if username in chats:
-        chats.remove(username)
+        chats.add(row[0] if row[1] == username else row[1])
+    chats.discard(username)
     return jsonify(list(chats))
 
 @app.route('/search', methods=['GET'])
@@ -165,25 +154,22 @@ def search_users():
     q = request.args.get('q', '').strip()
     if not q:
         return jsonify([])
-    c.execute('SELECT username, first_name, last_name, avatar_color, avatar_emoji FROM users WHERE username LIKE ? OR first_name LIKE ? OR last_name LIKE ?',
-              (f'%{q}%', f'%{q}%', f'%{q}%'))
-    rows = c.fetchall()
+    c.execute('SELECT username, display_name, avatar FROM users WHERE username LIKE ? OR display_name LIKE ?',
+              (f'%{q}%', f'%{q}%'))
     result = []
-    for row in rows:
+    for row in c.fetchall():
         result.append({
             'username': row[0],
-            'first_name': row[1] or '',
-            'last_name': row[2] or '',
-            'avatar_color': row[3] or '#4a90d4',
-            'avatar_emoji': row[4] or '👤'
+            'display_name': row[1] or '',
+            'avatar': row[2] or '',
+            'verified': row[0] in VERIFIED_USERS
         })
     return jsonify(result)
 
-# Self-ping чтобы Render не засыпал
 def self_ping():
-    time.sleep(30)  # ждём пока сервер поднимется
+    time.sleep(30)
     while True:
-        time.sleep(600)  # каждые 10 минут
+        time.sleep(600)
         try:
             requests.get('https://telebem-server.onrender.com/ping', timeout=10)
             print('Self-ping OK')
